@@ -199,4 +199,6 @@ This project was developed by The Unstoppable team for the Nextech 1.0 hackathon
 
 ---
 
+**Jai Hind**
+
 **Built with ❤️ by The Unstoppable Team for Nextech 1.0**
