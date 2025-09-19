@@ -251,8 +251,7 @@ export default function App() {
             <div className="font-semibold">{s.id}</div>
             <div className="text-sm">HR: {s.heart_rate} bpm</div>
             <div className="text-sm">GPS: {s.gps?.[0]}, {s.gps?.[1]}</div>
-            <div className="text-sm text-gray-700">Activity: {s.activity || 'patrol'}</div>
-            <div className={`text-sm ${s.status === 'critical' ? 'text-red-700 font-bold' : s.status === 'warn' ? 'text-yellow-700 font-semibold' : 'text-gray-700'}`}>Status: {s.status}</div>
+            <div className={`text-sm ${s.status === 'critical' ? 'text-red-700 font-bold' : 'text-gray-700'}`}>Status: {s.status}</div>
           </div>
         ))}
       </div>
