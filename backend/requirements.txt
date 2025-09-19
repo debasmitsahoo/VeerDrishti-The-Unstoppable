@@ -1,0 +1,8 @@
+fastapi
+uvicorn[standard]
+numpy
+opencv-contrib-python
+python-multipart
+Pillow
+aiofiles
+
