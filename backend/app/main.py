@@ -60,11 +60,15 @@ def get_detections() -> JSONResponse:
 
 
 @app.post("/api/register-face", summary="Register a face for a given ID")
-async def register_face(id: str = Form(...), file: UploadFile = File(...)) -> JSONResponse:
+async def register_face(
+    id: str = Form(...),
+    file: UploadFile = File(...),
+    category: str = Form("citizen"),
+) -> JSONResponse:
     # Read uploaded image bytes
     content: bytes = await file.read()
-    saved_count: int = face_db.register_face_from_bytes(person_id=id, image_bytes=content)
-    return JSONResponse({"id": id, "faces_saved": saved_count})
+    saved_count: int = face_db.register_face_from_bytes(person_id=id, image_bytes=content, category=category)
+    return JSONResponse({"id": id, "faces_saved": saved_count, "category": category})
 
 
 @app.get("/api/faces", summary="List registered face IDs")

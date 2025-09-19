@@ -18,6 +18,9 @@ _LABELS_PATH = _DATA_DIR / "labels.pkl"
 _recognizer: Optional[cv2.face_LBPHFaceRecognizer] = None  # type: ignore[attr-defined]
 _label_to_id: Dict[str, int] = {}
 _id_to_label: Dict[int, str] = {}
+_id_to_category: Dict[str, str] = {}
+
+_VALID_CATEGORIES = {"citizen", "official", "criminal"}
 
 
 def initialize() -> None:
@@ -33,16 +36,21 @@ def _create_recognizer():
 
 def _save_labels() -> None:
     with open(_LABELS_PATH, "wb") as f:
-        pickle.dump({"label_to_id": _label_to_id, "id_to_label": _id_to_label}, f)
+        pickle.dump({
+            "label_to_id": _label_to_id,
+            "id_to_label": _id_to_label,
+            "id_to_category": _id_to_category,
+        }, f)
 
 
 def _load_labels() -> None:
-    global _label_to_id, _id_to_label
+    global _label_to_id, _id_to_label, _id_to_category
     if _LABELS_PATH.exists():
         with open(_LABELS_PATH, "rb") as f:
             data = pickle.load(f)
             _label_to_id = data.get("label_to_id", {})
             _id_to_label = data.get("id_to_label", {})
+            _id_to_category = data.get("id_to_category", {})
 
 
 def _load_model_if_exists() -> None:
@@ -55,7 +63,16 @@ def _load_model_if_exists() -> None:
 
 def list_registered_ids() -> List[str]:
     initialize()
-    ids = [p.name for p in _FACES_DIR.iterdir() if p.is_dir()]
+    ids: List[str] = []
+    for p in _FACES_DIR.iterdir():
+        if not p.is_dir():
+            continue
+        if p.name in _VALID_CATEGORIES:
+            for sub in p.iterdir():
+                if sub.is_dir():
+                    ids.append(sub.name)
+        else:
+            ids.append(p.name)
     ids.sort()
     return ids
 
@@ -70,11 +87,16 @@ def _detect_faces(gray_image: np.ndarray) -> List[Tuple[int, int, int, int]]:
 def _prepare_face(gray_face: np.ndarray) -> np.ndarray:
     # Normalize face crop to a fixed size for recognizer
     face_resized = cv2.resize(gray_face, (100, 100))
-    return face_resized
+    # Improve robustness across lighting by equalizing histogram
+    face_eq = cv2.equalizeHist(face_resized)
+    return face_eq
 
 
-def register_face_from_bytes(person_id: str, image_bytes: bytes) -> int:
+def register_face_from_bytes(person_id: str, image_bytes: bytes, category: str = "citizen") -> int:
     initialize()
+    cat = (category or "citizen").strip().lower()
+    if cat not in _VALID_CATEGORIES:
+        cat = "citizen"
     np_buf = np.frombuffer(image_bytes, dtype=np.uint8)
     img = cv2.imdecode(np_buf, cv2.IMREAD_COLOR)
     if img is None:
@@ -84,7 +106,8 @@ def register_face_from_bytes(person_id: str, image_bytes: bytes) -> int:
     boxes = _detect_faces(gray)
     saved = 0
 
-    person_dir = _FACES_DIR / person_id
+    # Save under faces/{category}/{id}
+    person_dir = _FACES_DIR / cat / person_id
     person_dir.mkdir(parents=True, exist_ok=True)
 
     for (x, y, w, h) in boxes:
@@ -109,24 +132,50 @@ def train_from_disk() -> None:
 
     _label_to_id = {}
     _id_to_label = {}
+    global _id_to_category
+    _id_to_category = {}
     next_id = 0
 
-    for person_dir in sorted(_FACES_DIR.iterdir()):
-        if not person_dir.is_dir():
+    # Support both legacy faces/{id} and new faces/{category}/{id}
+    for top in sorted(_FACES_DIR.iterdir()):
+        if not top.is_dir():
             continue
-        person_label = person_dir.name
-        _label_to_id[person_label] = next_id
-        _id_to_label[next_id] = person_label
-        label_id = next_id
-        next_id += 1
+        if top.name in _VALID_CATEGORIES:
+            category = top.name
+            for person_dir in sorted(top.iterdir()):
+                if not person_dir.is_dir():
+                    continue
+                person_label = person_dir.name  # use ID as label
+                _label_to_id[person_label] = next_id
+                _id_to_label[next_id] = person_label
+                _id_to_category[person_label] = category
+                label_id = next_id
+                next_id += 1
 
-        for img_path in person_dir.glob("*.png"):
-            img = cv2.imread(str(img_path), cv2.IMREAD_GRAYSCALE)
-            if img is None:
-                continue
-            img = _prepare_face(img)
-            images.append(img)
-            labels.append(label_id)
+                for img_path in person_dir.glob("*.png"):
+                    img = cv2.imread(str(img_path), cv2.IMREAD_GRAYSCALE)
+                    if img is None:
+                        continue
+                    img = _prepare_face(img)
+                    images.append(img)
+                    labels.append(label_id)
+        else:
+            # Legacy layout: treat as citizen by default
+            person_dir = top
+            person_label = person_dir.name
+            _label_to_id[person_label] = next_id
+            _id_to_label[next_id] = person_label
+            _id_to_category[person_label] = "citizen"
+            label_id = next_id
+            next_id += 1
+
+            for img_path in person_dir.glob("*.png"):
+                img = cv2.imread(str(img_path), cv2.IMREAD_GRAYSCALE)
+                if img is None:
+                    continue
+                img = _prepare_face(img)
+                images.append(img)
+                labels.append(label_id)
 
     if len(images) == 0:
         # No data; reset recognizer
@@ -139,27 +188,28 @@ def train_from_disk() -> None:
     _save_labels()
 
 
-def match_face(gray_face_crop: np.ndarray) -> Tuple[str, float, bool]:
+def match_face(gray_face_crop: np.ndarray) -> Tuple[str, float, bool, str]:
     initialize()
     if gray_face_crop is None or gray_face_crop.size == 0:
-        return ("unknown", 0.0, False)
+        return ("unknown", 0.0, False, "unknown")
 
     face = _prepare_face(gray_face_crop)
 
     if _recognizer is None:
         _load_model_if_exists()
     if _recognizer is None or len(_id_to_label) == 0:
-        return ("unknown", 0.0, False)
+        return ("unknown", 0.0, False, "unknown")
 
     try:
         pred_label_id, confidence = _recognizer.predict(face)
     except cv2.error:
-        return ("unknown", 0.0, False)
+        return ("unknown", 0.0, False, "unknown")
 
     label = _id_to_label.get(int(pred_label_id), "unknown")
-    # Lower confidence is better for LBPH. Threshold is empirical.
-    threshold = 65.0
+    # Lower confidence is better for LBPH. Relaxed threshold for better recall.
+    threshold = 85.0
     is_match = float(confidence) < threshold
-    return (label if is_match else "unknown", float(confidence), bool(is_match))
+    category = _id_to_category.get(label, "citizen") if is_match else "unknown"
+    return (label if is_match else "unknown", float(confidence), bool(is_match), category)
 
 

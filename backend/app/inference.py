@@ -23,16 +23,52 @@ def _get_haar_cascade() -> cv2.CascadeClassifier:
 
 def _annotate_and_build_payload(
     frame: np.ndarray,
-    detections: List[Tuple[int, int, int, int, str, float, bool]],
+    detections: List[Tuple[int, int, int, int, str, float, bool, str]],
 ) -> Dict[str, Any]:
     h, w = frame.shape[:2]
     payload: Dict[str, Any] = {"frame_size": [int(w), int(h)], "detections": []}
 
-    for (x, y, ww, hh, label, conf, is_match) in detections:
-        color = (0, 255, 0) if is_match else (0, 0, 255)
+    for (x, y, ww, hh, label, conf, is_match, category) in detections:
+        # Color by category: citizen=yellow, official=green, criminal=red, unknown=red
+        if is_match:
+            if category == "official":
+                color = (0, 255, 0)
+            elif category == "citizen":
+                color = (0, 255, 255)
+            elif category == "criminal":
+                color = (0, 0, 255)
+            else:
+                color = (0, 255, 0)
+        else:
+            # Unknown: orange (BGR for OpenCV)
+            color = (0, 165, 255)
         cv2.rectangle(frame, (x, y), (x + ww, y + hh), color, 2)
-        text = f"{label} ({conf:.1f})" if is_match else "unknown"
-        cv2.putText(frame, text, (x, y - 8), cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 1, cv2.LINE_AA)
+
+        # Compose readable tag
+        if is_match:
+            if category == "official":
+                text = f"Official: {label} ({conf:.1f})"
+            elif category == "citizen":
+                text = f"Citizen: {label} ({conf:.1f})"
+            elif category == "criminal":
+                text = f"Criminal: {label} ({conf:.1f})"
+            else:
+                text = f"Known: {label} ({conf:.1f})"
+        else:
+            text = "Intruder"
+
+        # Draw a filled background for text for visibility
+        (tw, th), baseline = cv2.getTextSize(text, cv2.FONT_HERSHEY_SIMPLEX, 0.6, 2)
+        text_x = x
+        text_y = y - 10 if y - 10 > 10 else y + hh + th + 6
+        cv2.rectangle(
+            frame,
+            (text_x - 2, text_y - th - 4),
+            (text_x + tw + 2, text_y + baseline),
+            (0, 0, 0),
+            thickness=-1,
+        )
+        cv2.putText(frame, text, (text_x, text_y), cv2.FONT_HERSHEY_SIMPLEX, 0.6, color, 2, cv2.LINE_AA)
 
         payload["detections"].append(
             {
@@ -41,6 +77,8 @@ def _annotate_and_build_payload(
                 "bbox": [int(x), int(y), int(ww), int(hh)],
                 "timestamp": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
                 "face_match": bool(is_match),
+                "category": category if is_match else "unknown",
+                "alert": True if (is_match and category == "criminal") or (not is_match) else False,
             }
         )
 
@@ -70,21 +108,33 @@ def _inference_loop(camera_index: int) -> None:
             gray_full = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
             rects, _ = hog.detectMultiScale(gray_full, winStride=(8, 8))
 
-            found: List[Tuple[int, int, int, int, str, float, bool]] = []
+            found: List[Tuple[int, int, int, int, str, float, bool, str]] = []
 
-            # Within each person bbox, try finding faces
-            for (px, py, pw, ph) in rects:
-                roi = frame[py : py + ph, px : px + pw]
-                gray_roi = cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY)
-                faces = face_cascade.detectMultiScale(gray_roi, scaleFactor=1.2, minNeighbors=5, minSize=(50, 50))
+            if len(rects) > 0:
+                # Within each person bbox, try finding faces
+                for (px, py, pw, ph) in rects:
+                    roi = frame[py : py + ph, px : px + pw]
+                    gray_roi = cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY)
+                    faces = face_cascade.detectMultiScale(
+                        gray_roi, scaleFactor=1.2, minNeighbors=5, minSize=(50, 50)
+                    )
 
-                for (fx, fy, fw, fh) in faces:
-                    # Coordinates relative to full frame
-                    x, y, w, h = px + fx, py + fy, fw, fh
+                    for (fx, fy, fw, fh) in faces:
+                        # Coordinates relative to full frame
+                        x, y, w, h = px + fx, py + fy, fw, fh
+                        face_crop_gray = gray_full[y : y + h, x : x + w]
+
+                        label, confidence, is_match, category = face_db.match_face(face_crop_gray)
+                        found.append((x, y, w, h, label, confidence, is_match, category))
+            else:
+                # Fallback: detect faces on the whole frame if no persons detected
+                faces = face_cascade.detectMultiScale(
+                    gray_full, scaleFactor=1.2, minNeighbors=5, minSize=(50, 50)
+                )
+                for (x, y, w, h) in faces:
                     face_crop_gray = gray_full[y : y + h, x : x + w]
-
-                    label, confidence, is_match = face_db.match_face(face_crop_gray)
-                    found.append((x, y, w, h, label, confidence, is_match))
+                    label, confidence, is_match, category = face_db.match_face(face_crop_gray)
+                    found.append((x, y, w, h, label, confidence, is_match, category))
 
             # Draw and package payload
             payload = _annotate_and_build_payload(frame, found)
