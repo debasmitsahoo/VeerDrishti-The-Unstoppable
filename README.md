@@ -7,7 +7,7 @@
 - **Institution**: Regional College of Management, Bhubaneswar
 
 ## 👥 Team Members
-- **Rajeev Sritam Mohapatra**
+- **Rajeev Sritam Mohapatra** (Team Leader)
 - **Debasmit Sahoo**
 - **Soumya Ranjan Mishra**
 - **Subhranshu Sekhar Pal**
